@@ -71,7 +71,6 @@ void setup() {
   config.xclk_freq_hz = 20000000;
   config.pixel_format = PIXFORMAT_JPEG;
 
-  // Bajamos un poco la calidad para ganar velocidad y respuesta
   config.frame_size   = FRAMESIZE_QVGA;  
   config.jpeg_quality = 12; 
   config.fb_count     = 2;
@@ -85,64 +84,75 @@ void setup() {
 }
 
 // ---------------------------------------------------
-// Función auxiliar para ejecutar comandos
+// Función auxiliar para hacer parpadear el LED al recibir comando
+void blinkLED() {
+  digitalWrite(ledPin, HIGH);
+  delay(100); // Breve encendido
+  digitalWrite(ledPin, LOW);
+}
+
+// Función para interpretar los 6 botones
 void ejecutarComando(String cmd) {
-  if (cmd.indexOf("GET /led/on") >= 0) {
-    digitalWrite(ledPin, HIGH);
-    Serial.println("LED ENCENDIDO");
+  // Detectar qué botón se presionó
+  if (cmd.indexOf("GET /action/forward") >= 0) {
+    Serial.println("ADELANTE");
+    blinkLED();
   }
-  else if (cmd.indexOf("GET /led/off") >= 0) {
-    digitalWrite(ledPin, LOW);
-    Serial.println("LED APAGADO");
+  else if (cmd.indexOf("GET /action/back") >= 0) {
+    Serial.println("ATRAS");
+    blinkLED();
+  }
+  else if (cmd.indexOf("GET /action/left") >= 0) {
+    Serial.println("IZQUIERDA");
+    blinkLED();
+  }
+  else if (cmd.indexOf("GET /action/right") >= 0) {
+    Serial.println("DERECHA");
+    blinkLED();
+  }
+  else if (cmd.indexOf("GET /action/up") >= 0) {
+    Serial.println("ARRIBA");
+    blinkLED();
+  }
+  else if (cmd.indexOf("GET /action/down") >= 0) {
+    Serial.println("ABAJO");
+    blinkLED();
   }
 }
 
 // ---------------------------------------------------
-// STREAM MJPEG en /stream
-// MODIFICADO: Ahora revisa si hay peticiones de botones MIENTRAS transmite
+// STREAM MJPEG en /stream (CON LA SOLUCIÓN DE LOS BOTONES)
 void enviarStream(WiFiClient &streamClient) {
   streamClient.println("HTTP/1.1 200 OK");
   streamClient.println("Content-Type: multipart/x-mixed-replace; boundary=frame");
   streamClient.println();
 
   while (streamClient.connected()) {
-    // 1. Obtener foto
     camera_fb_t *fb = esp_camera_fb_get();
     if (!fb) {
       Serial.println("Fallo captura de cámara");
       continue;
     }
 
-    // 2. Enviar cabecera y datos de la foto
     streamClient.println("--frame");
     streamClient.println("Content-Type: image/jpeg");
     streamClient.printf("Content-Length: %d\r\n\r\n", fb->len);
     streamClient.write(fb->buf, fb->len);
     streamClient.println();
     
-    // Liberar memoria de la foto
     esp_camera_fb_return(fb);
 
-    // -------------------------------------------------------
-    // Mientras estamos en el bucle de video, revisamos si 
-    // hay OTRO cliente intentando conectarse (el botón)
+    // --- Revisar botones durante el video ---
     WiFiClient commandClient = server.available();
-    
     if (commandClient) {
-      // Si hay alguien tocando la puerta (botón), leemos qué quiere
       String req = commandClient.readStringUntil('\r');
       commandClient.flush();
-      
-      // Ejecutamos la acción (LED ON/OFF)
-      ejecutarComando(req);
-      
-      // Le respondemos rápido para cerrar esa conexión secundaria
+      ejecutarComando(req); // Procesar orden
       commandClient.println("HTTP/1.1 200 OK");
       commandClient.println("Connection: close");
       commandClient.println();
       commandClient.stop();
     }
-    // -------------------------------------------------------
   }
 }
 
@@ -154,17 +164,14 @@ void loop() {
     String req = client.readStringUntil('\r');
     client.flush();
 
-    // Si piden el video, entramos en el bucle de streaming
     if (req.indexOf("GET /stream") >= 0) {
       enviarStream(client);
     }
-    // Si es una petición normal (página principal o led si no hay video activo)
     else {
-      // Revisamos si es comando de LED (por si acaso el video no estaba activo)
+      // Revisar si es un comando (por si no hay video)
       ejecutarComando(req);
 
       if (req.indexOf("GET / ") >= 0) {
-        // Enviar Página Web
         client.println("HTTP/1.1 200 OK");
         client.println("Content-Type: text/html");
         client.println();
@@ -172,28 +179,36 @@ void loop() {
         client.println("<html><head>");
         client.println("<meta name='viewport' content='width=device-width, initial-scale=1'>");
         client.println("<style>");
-        client.println("body { text-align:center; font-family: Arial; background-color: #f2f2f2; }");
-        client.println("h2 { color: #333; }");
-        client.println("button { padding: 15px 30px; font-size: 18px; border: none; border-radius: 5px; cursor: pointer; margin: 10px; }");
-        client.println(".btn-on { background-color: #28a745; color: white; }");
-        client.println(".btn-off { background-color: #dc3545; color: white; }");
+        client.println("body { text-align:center; font-family: Arial; background-color: #222; color: white; }");
+        client.println("button { padding: 15px; font-size: 18px; width: 100px; margin: 5px; border: none; border-radius: 8px; cursor: pointer; }");
+        client.println(".dir { background-color: #007bff; color: white; }"); /* Azul para movimiento */
+        client.println(".alt { background-color: #28a745; color: white; }"); /* Verde para altura */
         client.println("</style>");
         client.println("</head><body>");
 
-        client.println("<h2>ESP32-CAM Stream & Control</h2>");
-        
-        // Imagen del stream
-        client.println("<img src='/stream' style='width:320px; border-radius:10px;'>");
+        client.println("<h2>Control Drone ESP32</h2>");
+        client.println("<img src='/stream' style='width:320px; border-radius:10px; border: 2px solid #555;'>");
         client.println("<br><br>");
 
-        // Botones usando fetch simple (sin recargar página)
-        client.println("<button class='btn-on' onclick=\"fetch('/led/on')\">ENCENDER LED</button>");
-        client.println("<button class='btn-off' onclick=\"fetch('/led/off')\">APAGAR LED</button>");
+        // --- CONTROLES DIRECCIÓN ---
+        client.println("<div>");
+        client.println("<button class='dir' onclick=\"fetch('/action/forward')\">Adelante</button><br>");
+        client.println("<button class='dir' onclick=\"fetch('/action/left')\">Izquierda</button>");
+        client.println("<button class='dir' onclick=\"fetch('/action/right')\">Derecha</button><br>");
+        client.println("<button class='dir' onclick=\"fetch('/action/back')\">Atras</button>");
+        client.println("</div>");
+        
+        client.println("<br><hr style='width:50%'><br>");
+
+        // --- CONTROLES ALTURA ---
+        client.println("<div>");
+        client.println("<button class='alt' onclick=\"fetch('/action/up')\">Arriba</button>");
+        client.println("<button class='alt' onclick=\"fetch('/action/down')\">Abajo</button>");
+        client.println("</div>");
 
         client.println("</body></html>");
       }
       else {
-        // Respuesta genérica para los botones
         client.println("HTTP/1.1 200 OK");
         client.println("Connection: close");
         client.println();
